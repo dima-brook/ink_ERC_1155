@@ -265,6 +265,7 @@ mod erc1155 {
     #[ink(storage)]
     #[derive(Default)]
     pub struct Contract {
+        owner: AccountId,
         /// Tracks the balances of accounts across the different tokens that they might be holding.
         balances: BTreeMap<(AccountId, TokenId), Balance>,
         /// Which accounts (called operators) have been approved to spend funds on behalf of an owner.
@@ -278,7 +279,10 @@ mod erc1155 {
         /// Initialize a default instance of this ERC-1155 implementation.
         #[ink(constructor)]
         pub fn new() -> Self {
-            Default::default()
+            Self {
+                owner: Self::env().caller(),
+                ..Default::default()
+            }
         }
 
         /// Create the initial supply for a token.
@@ -290,8 +294,9 @@ mod erc1155 {
         /// production environment you'd probably want to lock down the addresses that are allowed
         /// to create tokens.
         #[ink(message)]
-        pub fn create(&mut self, value: Balance) -> TokenId {
+        pub fn create(&mut self, value: Balance) -> Result<TokenId> {
             let caller = self.env().caller();
+            ensure!(caller == self.owner, Error::NotApproved);
 
             // Given that TokenId is a `u128` the likelihood of this overflowing is pretty slim.
             self.token_id_nonce += 1;
@@ -306,22 +311,19 @@ mod erc1155 {
                 value,
             });
 
-            self.token_id_nonce
+            Ok(self.token_id_nonce)
         }
 
         /// Mint a `value` amount of `token_id` tokens.
         ///
         /// It is assumed that the token has already been `create`-ed. The newly minted supply will
         /// be assigned to the caller (a.k.a the minter).
-        ///
-        /// Note that as implemented anyone can mint tokens. If you were to deploy this to a
-        /// production environment you'd probably want to lock down the addresses that are allowed
-        /// to mint tokens.
         #[ink(message)]
         pub fn mint(&mut self, token_id: TokenId, value: Balance) -> Result<()> {
+            let caller = self.env().caller();
+            ensure!(caller == self.owner, Error::NotApproved);
             ensure!(token_id <= self.token_id_nonce, Error::UnexistentToken);
 
-            let caller = self.env().caller();
             self.balances.insert((caller, token_id), value);
 
             // Emit transfer event but with mint semantics
@@ -332,6 +334,21 @@ mod erc1155 {
                 token_id,
                 value,
             });
+
+            Ok(())
+        }
+
+        #[ink(message)]
+        pub fn burn(&mut self, account: AccountId, token_id: TokenId, value: Balance) -> Result<()> {
+            let caller = self.env().caller();
+            ensure!(caller == self.owner, Error::NotApproved);
+            ensure!(token_id <= self.token_id_nonce, Error::UnexistentToken);
+
+            let acc = (account, token_id);
+            let balance = *self.balances.get(&acc).ok_or(Error::InsufficientBalance)?;
+            ensure!(balance >= value, Error::InsufficientBalance);
+
+            self.balances.insert(acc, balance - value);
 
             Ok(())
         }
